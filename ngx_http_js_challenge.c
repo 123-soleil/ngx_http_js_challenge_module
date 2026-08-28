@@ -160,7 +160,7 @@ static void *ngx_http_js_challenge_create_loc_conf(ngx_conf_t *cf) {
 }
 
 
-static size_t load_whitelist( const char* file, network_info_t* list, size_t maxlen)
+static size_t load_whitelist(ngx_conf_t *cf, const char* file, network_info_t* list, size_t maxlen)
 {
     FILE* fp = NULL;
     char* linebuf = NULL;
@@ -177,21 +177,21 @@ static size_t load_whitelist( const char* file, network_info_t* list, size_t max
     // Allocate 1KB for line
     linebuf = malloc(1024);
     if (!linebuf) {
+        fclose(fp);
         return 0;
     }
 
     // Read line
-    while (fgets(linebuf, 1024, fp) != NULL) {
-        // If line is empty or begins with # (comment)
-        // skip altogether
-        if (strlen(linebuf) == 0 || linebuf[0] == '#') {
+    while (len < maxlen && fgets(linebuf, 1024, fp) != NULL) {
+        // If line is empty (blank or comment) skip altogether
+        if (linebuf[0] == '\0' || linebuf[0] == '\n' || linebuf[0] == '\r' || linebuf[0] == '#') {
             continue;
         }
 
         // Split by ;
         token = strtok(linebuf, ";");
 
-        do 
+        while (token != NULL && len < maxlen)
         {
             int res = sscanf(token, "%u.%u.%u.%u/%u",
                 &octets[0],
@@ -199,17 +199,22 @@ static size_t load_whitelist( const char* file, network_info_t* list, size_t max
                 &octets[2],
                 &octets[3],
                 &maskbits);
-            
-            // IP address found
-            if (res == 4 || res == 5) {
+
+            // IP address found, with valid octets (0-255) and, for a
+            // network entry, a valid mask (0-32)
+            if ((res == 4 || res == 5)
+                && octets[0] <= 255 && octets[1] <= 255
+                && octets[2] <= 255 && octets[3] <= 255
+                && (res == 4 || maskbits <= 32)) {
+
                 list[len].addr = ((octets[0] << 24) & 0xFF000000)
                     | ((octets[1] << 16) & 0x00FF0000)
                     | ((octets[2] << 8) & 0x0000FF00)
                     | (octets[3] & 0x000000FF);
 
                 if (res == 5) {
-                    // IPv4 network address
-                    list[len].mask = ~((1u << (32 - maskbits)) - 1);
+                    // IPv4 network address ("/0" matches every address)
+                    list[len].mask = (maskbits == 0) ? 0x00000000 : ~((1u << (32 - maskbits)) - 1);
                 }
                 else {
                     // IPv4 host address
@@ -218,9 +223,18 @@ static size_t load_whitelist( const char* file, network_info_t* list, size_t max
 
                 ++len;
             }
+            else {
+                ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                    "js_challenge_whitelist: ignoring malformed entry \"%s\"", token);
+            }
 
+            token = strtok(NULL, ";");
+        }
+    }
 
-        } while (len < WHITELIST_MAX_LENGTH && ((token = strtok(NULL, ";")) != NULL));
+    if (len >= maxlen && !feof(fp)) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+            "js_challenge_whitelist: file has more than %uz entries, extra entries ignored", maxlen);
     }
 
     free(linebuf);
@@ -228,6 +242,17 @@ static size_t load_whitelist( const char* file, network_info_t* list, size_t max
     return len;
 }
 
+
+
+static ngx_int_t ngx_http_js_challenge_copy_path(ngx_conf_t *cf, ngx_str_t *src, char *dst, const char *directive_name) {
+    if (src->len >= PATH_MAX) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%s: path too long", directive_name);
+        return NGX_ERROR;
+    }
+
+    ngx_cpystrn((u_char *) dst, src->data, src->len + 1);
+    return NGX_OK;
+}
 
 
 static char *ngx_http_js_challenge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
@@ -253,11 +278,21 @@ static char *ngx_http_js_challenge_merge_loc_conf(ngx_conf_t *cf, void *parent, 
 
         // Read file in memory
         char path[PATH_MAX];
-        memcpy(path, conf->html_path.data, conf->html_path.len);
-        *(path + conf->html_path.len) = '\0';
+        if (ngx_http_js_challenge_copy_path(cf, &conf->html_path, path, "js_challenge_html") != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
 
         struct stat info;
-        stat(path, &info);
+        if (stat(path, &info) < 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "js_challenge_html: Could not stat file '%s': %s", path,
+                               strerror(errno));
+            return NGX_CONF_ERROR;
+        }
+
+        if (info.st_size <= 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "js_challenge_html: file '%s' is empty", path);
+            return NGX_CONF_ERROR;
+        }
 
         int fd = open(path, O_RDONLY, 0);
         if (fd < 0) {
@@ -297,10 +332,11 @@ static char *ngx_http_js_challenge_merge_loc_conf(ngx_conf_t *cf, void *parent, 
         } else {
             // Read whitelist file
             char path[PATH_MAX];
-            memcpy(path, conf->whitelist_path.data, conf->whitelist_path.len);
-            *(path + conf->whitelist_path.len) = '\0';
+            if (ngx_http_js_challenge_copy_path(cf, &conf->whitelist_path, path, "js_challenge_whitelist") != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
 
-            conf->whitelist_len = load_whitelist(path, conf->whitelist, WHITELIST_MAX_LENGTH);
+            conf->whitelist_len = load_whitelist(cf, path, conf->whitelist, WHITELIST_MAX_LENGTH);
         }
     }
 
@@ -460,8 +496,10 @@ static ngx_int_t ip_whitelist_hit (ngx_http_request_t *r, ngx_http_js_challenge_
     //unsigned char* ipa, *ipb;
 
     // Convert ngx_str_t to C string
+    // ngx_snprintf does not null-terminate; reserve the last byte so ipstr
+    // (already zeroed) always ends in '\0', even for a non-IPv4 addr_text.
     memset(ipstr, 0, sizeof(ipstr));
-    ngx_snprintf((u_char*)ipstr, sizeof(ipstr), "%V", &r->connection->addr_text);
+    ngx_snprintf((u_char*)ipstr, sizeof(ipstr) - 1, "%V", &r->connection->addr_text);
 
     // Convert C string to uint32_t 
     if ( !inet_pton(AF_INET, ipstr, &ip) ) {
