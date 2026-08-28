@@ -2,10 +2,6 @@
 ## ngx_http_js_challenge_module
 
 ![GitHub](https://img.shields.io/github/license/simon987/ngx_http_js_challenge_module.svg)
-[![CodeFactor](https://www.codefactor.io/repository/github/simon987/ngx_http_js_challenge_module/badge)](https://www.codefactor.io/repository/github/simon987/ngx_http_js_challenge_module)
-
-
-[Demo website](https://ngx-js-demo.simon987.net/)
 
 Simple javascript proof-of-work based access for Nginx with virtually no overhead.
 
@@ -81,7 +77,7 @@ These steps have to be performed on machine with compatible configuration (same 
     ```
 3. Compile the module
     ```bash
-    git clone https://github.com/simon987/ngx_http_js_challenge_module
+    git clone https://github.com/123soleil/ngx_http_js_challenge_module
     cd ngx_http_js_challenge_module
     ./build.sh
     ```
