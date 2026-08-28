@@ -77,7 +77,7 @@ These steps have to be performed on machine with compatible configuration (same 
     ```
 3. Compile the module
     ```bash
-    git clone https://github.com/123soleil/ngx_http_js_challenge_module
+    git clone https://github.com/123-soleil/ngx_http_js_challenge_module
     cd ngx_http_js_challenge_module
     ./build.sh
     ```
